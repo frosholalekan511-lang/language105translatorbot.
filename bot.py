@@ -1,6 +1,7 @@
 import logging
 import os
 import sys
+import time
 from deep_translator import GoogleTranslator
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackQueryHandler, ContextTypes
@@ -12,30 +13,43 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# --- Token Configuration (Multiple Fallbacks) ---
-TOKEN = (
-    os.environ.get("TELEGRAM_BOT_TOKEN") or 
-    os.environ.get("BOT_TOKEN") or 
-    os.environ.get("TOKEN") or 
-    os.environ.get("TELEGRAM_TOKEN")
-)
+# --- RETRY MECHANISM FOR TOKEN ---
+MAX_RETRIES = 5
+RETRY_DELAY = 5
 
-# Debug: Check if token exists
-logger.info("=" * 50)
-logger.info("🔍 Checking Environment Variables...")
-logger.info(f"TELEGRAM_BOT_TOKEN: {'✅ SET' if os.environ.get('TELEGRAM_BOT_TOKEN') else '❌ NOT SET'}")
-logger.info(f"BOT_TOKEN: {'✅ SET' if os.environ.get('BOT_TOKEN') else '❌ NOT SET'}")
-logger.info(f"TOKEN: {'✅ SET' if os.environ.get('TOKEN') else '❌ NOT SET'}")
-logger.info("=" * 50)
+def get_bot_token():
+    """Get token with retry mechanism"""
+    for attempt in range(MAX_RETRIES):
+        token = (
+            os.environ.get("TELEGRAM_BOT_TOKEN") or 
+            os.environ.get("BOT_TOKEN") or 
+            os.environ.get("TOKEN") or 
+            os.environ.get("TELEGRAM_TOKEN")
+        )
+        
+        if token:
+            logger.info(f"✅ Token found on attempt {attempt + 1}")
+            return token
+        
+        logger.warning(f"⚠️ No token found (attempt {attempt + 1}/{MAX_RETRIES})")
+        if attempt < MAX_RETRIES - 1:
+            time.sleep(RETRY_DELAY)
+    
+    return None
+
+# --- Get Token ---
+logger.info("=" * 60)
+logger.info("🚀 STARTING BOT...")
+logger.info("=" * 60)
+
+TOKEN = get_bot_token()
 
 if not TOKEN:
-    logger.error("❌ CRITICAL: No bot token found in environment variables!")
-    logger.error("Please add TELEGRAM_BOT_TOKEN to Railway variables.")
-    logger.error("Example: TELEGRAM_BOT_TOKEN = 1234567890:ABCdefGHIjklMNOpqrsTUVwxyz")
+    logger.error("❌ CRITICAL: No bot token found after all retries!")
+    logger.error("Please set TELEGRAM_BOT_TOKEN in Railway variables")
     sys.exit(1)
 
-logger.info(f"✅ Bot token loaded successfully!")
-logger.info(f"Token starts with: {TOKEN[:10]}... (hidden for security)")
+logger.info(f"✅ Token loaded: {TOKEN[:10]}... (hidden)")
 
 # --- Language Mapping ---
 LANGUAGES = {
@@ -61,17 +75,17 @@ LANGUAGES = {
 
 # --- Helper Functions ---
 def get_translated_text(text, target_lang):
-    """Translates text using Google Translate."""
+    """Translates text with error handling"""
     try:
         translator = GoogleTranslator(source='auto', target=target_lang)
         translation = translator.translate(text)
-        return translation
+        return translation if translation else "⚠️ Translation returned empty result"
     except Exception as e:
         logger.error(f"Translation error: {e}")
-        return "⚠️ Translation failed. Please try again."
+        return "⚠️ Sorry, I couldn't translate that. Please try again."
 
 def get_language_keyboard():
-    """Creates inline keyboard with language options."""
+    """Creates inline keyboard"""
     keyboard = []
     row = []
     for i, (name, code) in enumerate(LANGUAGES.items()):
@@ -85,155 +99,178 @@ def get_language_keyboard():
 
 # --- Bot Command Handlers ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Send welcome message."""
-    user = update.effective_user
-    context.user_data['target_lang'] = 'en'
-    
-    welcome_text = (
-        f"👋 Hello {user.first_name}!\n\n"
-        "🌍 I'm **Language105 Translator Bot**!\n\n"
-        "**How to use me:**\n"
-        "1️⃣ Send any text and I'll translate it\n"
-        "2️⃣ Use /lang to change language\n"
-        "3️⃣ Current language: English\n\n"
-        "💡 Use /help for more commands\n\n"
-        "Let's start! 🚀"
-    )
-    await update.message.reply_text(welcome_text)
+    """Welcome message"""
+    try:
+        user = update.effective_user
+        context.user_data['target_lang'] = 'en'
+        
+        welcome = (
+            f"👋 Hello {user.first_name}!\n\n"
+            "🌍 I'm **Language105 Translator Bot**!\n\n"
+            "**How to use:**\n"
+            "1️⃣ Send any text - I'll translate it\n"
+            "2️⃣ Use /lang to change language\n"
+            "3️⃣ Default: English\n\n"
+            "💡 Use /help for more\n\n"
+            "Let's start! 🚀"
+        )
+        await update.message.reply_text(welcome)
+    except Exception as e:
+        logger.error(f"Start error: {e}")
+        await update.message.reply_text("⚠️ Sorry, something went wrong. Please try again.")
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Send help message."""
+    """Help message"""
     help_text = (
         "🤖 **Help Center**\n\n"
         "**Commands:**\n"
         "/start - Start the bot\n"
-        "/help - Show this help\n"
+        "/help - This help\n"
         "/lang - Change language\n"
-        "/languages - List all languages\n"
+        "/languages - All languages\n"
         "/about - About this bot\n\n"
         "**How to Translate:**\n"
         "• Send any text message\n"
-        "• I'll translate it automatically\n"
-        "• Use /lang to switch languages"
+        "• I'll translate it automatically"
     )
     await update.message.reply_text(help_text)
 
 async def languages_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Show all supported languages."""
+    """Show all languages"""
     lang_list = "\n".join([f"• {name}" for name in LANGUAGES.keys()])
     await update.message.reply_text(
-        f"🌐 **Supported Languages ({len(LANGUAGES)}):**\n\n{lang_list}\n\n"
-        "Use /lang to change your target language."
+        f"🌐 **Supported Languages ({len(LANGUAGES)}):**\n\n{lang_list}"
     )
 
 async def about_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Show about information."""
-    about_text = (
+    """About message"""
+    about = (
         "🤖 **Language105 Translator Bot**\n\n"
-        "Version: 1.0.0\n"
+        "Version: 2.0.0\n"
         "Powered by: Google Translate\n"
         "Hosted on: Railway\n\n"
-        "📚 Translates into 18+ languages\n"
-        "⚡ Fast and accurate\n"
-        "🆓 Completely free to use"
+        "📚 18+ languages\n"
+        "⚡ Fast & accurate\n"
+        "🆓 Completely free"
     )
-    await update.message.reply_text(about_text)
+    await update.message.reply_text(about)
 
 async def set_language(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle language selection."""
-    query = update.callback_query
-    
-    if query:
-        await query.answer()
-        lang_code = query.data
-        context.user_data['target_lang'] = lang_code
-        lang_name = next((name for name, code in LANGUAGES.items() if code == lang_code), lang_code)
-        await query.edit_message_text(
-            f"✅ Language set to **{lang_name}**!\n\n"
-            "Now send me any text to translate. 📝"
-        )
-        return
-    
-    if update.message:
-        await update.message.reply_text(
-            "🌐 **Choose your target language:**",
-            reply_markup=get_language_keyboard()
-        )
+    """Handle language selection"""
+    try:
+        query = update.callback_query
+        
+        if query:
+            await query.answer()
+            lang_code = query.data
+            context.user_data['target_lang'] = lang_code
+            lang_name = next((name for name, code in LANGUAGES.items() if code == lang_code), lang_code)
+            await query.edit_message_text(
+                f"✅ Language set to **{lang_name}**!\n\n"
+                "Now send me text to translate. 📝"
+            )
+            return
+        
+        if update.message:
+            await update.message.reply_text(
+                "🌐 **Choose your target language:**",
+                reply_markup=get_language_keyboard()
+            )
+    except Exception as e:
+        logger.error(f"Language selection error: {e}")
+        await update.message.reply_text("⚠️ Error setting language. Please try again.")
 
 async def translate_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Translate incoming text messages."""
-    if update.message.text.startswith('/'):
-        return
-    
-    user_lang = context.user_data.get('target_lang', 'en')
-    text = update.message.text
-    
-    await update.message.chat.send_action(action="typing")
-    
-    translated = get_translated_text(text, user_lang)
-    lang_name = next((name for name, code in LANGUAGES.items() if code == user_lang), user_lang)
-    
-    response = (
-        f"🌍 **Translation ({lang_name}):**\n\n"
-        f"{translated}\n\n"
-        f"💡 Use /lang to change language"
-    )
-    await update.message.reply_text(response)
+    """Main translation function"""
+    try:
+        if update.message.text.startswith('/'):
+            return
+        
+        user_lang = context.user_data.get('target_lang', 'en')
+        text = update.message.text
+        
+        # Send typing indicator
+        await update.message.chat.send_action(action="typing")
+        
+        # Translate
+        translated = get_translated_text(text, user_lang)
+        
+        # Get language name
+        lang_name = next((name for name, code in LANGUAGES.items() if code == user_lang), user_lang)
+        
+        # Send response
+        response = (
+            f"🌍 **Translation ({lang_name}):**\n\n"
+            f"{translated}\n\n"
+            f"💡 Use /lang to change language"
+        )
+        await update.message.reply_text(response)
+        
+    except Exception as e:
+        logger.error(f"Translation error: {e}")
+        await update.message.reply_text("⚠️ Error translating. Please try again.")
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle photo messages."""
+    """Handle photos"""
     await update.message.reply_text(
         "🖼️ **Image Received!**\n\n"
-        "📝 OCR feature is coming soon!\n\n"
-        "For now, please send text directly for translation."
+        "📝 OCR feature coming soon!\n\n"
+        "For now, please send text directly."
     )
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Log errors."""
+    """Global error handler"""
     logger.error(f"Update {update} caused error: {context.error}")
+    try:
+        if update and update.effective_message:
+            await update.effective_message.reply_text(
+                "⚠️ Something went wrong. Please try again."
+            )
+    except:
+        pass
 
 # --- Main Function ---
-def main() -> None:
-    """Start the bot."""
+def main():
+    """Start the bot with error handling"""
     try:
+        logger.info("=" * 60)
+        logger.info("🤖 INITIALIZING BOT...")
+        logger.info("=" * 60)
+        
         # Create application
         application = Application.builder().token(TOKEN).build()
+        logger.info("✅ Application created")
         
-        # Register command handlers
+        # Add handlers
         application.add_handler(CommandHandler("start", start))
         application.add_handler(CommandHandler("help", help_command))
         application.add_handler(CommandHandler("lang", set_language))
         application.add_handler(CommandHandler("languages", languages_command))
         application.add_handler(CommandHandler("about", about_command))
         
-        # Register callback handler for language buttons
-        application.add_handler(CallbackQueryHandler(
-            set_language, 
-            pattern="|".join(LANGUAGES.values())
-        ))
+        # Language selection callback
+        pattern = "|".join(LANGUAGES.values())
+        application.add_handler(CallbackQueryHandler(set_language, pattern=pattern))
         
-        # Register message handlers
-        application.add_handler(MessageHandler(
-            filters.TEXT & ~filters.COMMAND, 
-            translate_text
-        ))
-        application.add_handler(MessageHandler(
-            filters.PHOTO, 
-            handle_photo
-        ))
+        # Message handlers
+        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, translate_text))
+        application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
         
-        # Register error handler
+        # Error handler
         application.add_error_handler(error_handler)
         
-        # Start bot
-        logger.info("🤖 Bot is starting...")
-        logger.info(f"✅ Bot @language105translatorbot is now running!")
-        logger.info("Press Ctrl+C to stop.")
+        logger.info("✅ All handlers registered")
+        logger.info("=" * 60)
+        logger.info("🚀 BOT IS RUNNING!")
+        logger.info(f"📱 @language105translatorbot")
+        logger.info("=" * 60)
         
+        # Start polling with retry
         application.run_polling()
         
     except Exception as e:
-        logger.error(f"❌ Failed to start bot: {e}")
+        logger.error(f"❌ Critical error: {e}")
+        time.sleep(10)
         sys.exit(1)
 
 if __name__ == "__main__":
